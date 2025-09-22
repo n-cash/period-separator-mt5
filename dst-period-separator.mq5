@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                   dinamic-period-separator.mq5    |
+//|                                   dst-period-separator.mq5    |
 //|   Separador dinámico con visibilidad por timeframe (NY DST opt)   |
 //+------------------------------------------------------------------+
 #property indicator_chart_window
@@ -432,4 +432,5 @@ int OnCalculate(const int rates_total,
 
    return(rates_total);
 }
+
 
