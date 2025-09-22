@@ -1,41 +1,58 @@
-//±-----------------------------------------------------------------+
-//| Period Separator.mq5                                            |
-//| Copyright 2023, MetaQuotes Software Corp.                        |
-//| https://www.mql5.com                                             |
-//±-----------------------------------------------------------------+
-
-#property copyright "MetaQuotes Software Corp."
-#property link      "https://www.mql5.com"
-#property version   "1.00"
+//+------------------------------------------------------------------+
+//| Universal Period Separator with DST (New York)                   |
+//| Prototipo                                                        |
+//+------------------------------------------------------------------+
+#property copyright "Open-Source"
+#property link      "https://github.com/"
+#property version   "0.1"
 #property indicator_chart_window
 
-input color           LineColor       = clrSilver;  // Line color
-input ENUM_LINE_STYLE LineStyle       = STYLE_DOT;  // Line style
-input int             LineWidth       = 1;          // Line width
-input int             SeparatorHour   = 0;          // Separator hour
-input int             SeparatorMinute = 0;          // Separator minute
+#include "daylight.mqh"   // asegurate de tener la librería en MQL5/Include/ - https://www.mql5.com/en/code/27860
 
-datetime lastTime = 0;
-int lastMonth = 0;
+input int   ServerGMT = 2;          // GMT del servidor del broker
+input color SepColor  = clrBlack;  // Color de las líneas
+input int   SepStyle  = STYLE_DOT;  // Estilo
+input int   SepWidth  = 1;          // Grosor
 
-//±-----------------------------------------------------------------+
-//| Custom indicator initialization function                        |
-//±-----------------------------------------------------------------+
-int OnInit()
+//--- Helpers para DST
+bool InDST(datetime t)
 {
-   // Delete all existing lines on initialization
-   for(int i=ObjectsTotal(0)-1; i>=0; i--) 
-   {
-      string name = ObjectName(0, i);
-      if(ObjectGetInteger(0, name, OBJPROP_TYPE) == OBJ_VLINE)
-         ObjectDelete(0, name);
-   }
-   return(INIT_SUCCEEDED);
+   datetime dst_start, dst_end;
+   DST_NewYork(TimeYear(t), dst_start, dst_end);
+   return (t >= dst_start && t < dst_end);
 }
 
-//±-----------------------------------------------------------------+
-//| Custom indicator iteration function                             |
-//±-----------------------------------------------------------------+
+int GetNewYorkOffset(datetime t)
+{
+   return InDST(t) ? -4 : -5; // NY DST=-4, Standard=-5
+}
+
+//--- Helpers para validar si es nueva apertura
+bool IsNewYear(datetime t)
+{
+   MqlDateTime st; TimeToStruct(t, st);
+   return (st.mon == 1 && st.day == 1 && st.hour == 0);
+}
+
+bool IsNewMonth(datetime t)
+{
+   MqlDateTime st; TimeToStruct(t, st);
+   return (st.day == 1 && st.hour == 0);
+}
+
+bool IsNewWeek(datetime t)
+{
+   MqlDateTime st; TimeToStruct(t, st);
+   return (st.day_of_week == 0 && st.hour == 0); // domingo 00:00
+}
+
+bool IsNewDay(datetime t)
+{
+   MqlDateTime st; TimeToStruct(t, st);
+   return (st.hour == 0 && st.min == 0);
+}
+
+//--- OnCalculate
 int OnCalculate(const int rates_total,
                 const int prev_calculated,
                 const datetime &time[],
@@ -47,26 +64,40 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
 {
-   MqlDateTime t2;
+   // Limpio líneas viejas
+   ObjectsDeleteAll(0,"Sep_");
 
-   for(int i = prev_calculated; i < rates_total; i++)
+   ENUM_TIMEFRAMES tf = (ENUM_TIMEFRAMES)_Period;
+
+   for(int i=0; i<rates_total; i++)
    {
-      TimeToStruct(time[i], t2);
-      if ((Period() == PERIOD_D1 && t2.mon != lastMonth && t2.day_of_week >= 1 && t2.day_of_week <= 5) || 
-          (Period() == PERIOD_W1 && t2.mon == 1 && t2.day <= 7) ||
-          (Period() == PERIOD_MN1 && t2.mon == 1 && t2.day == 1) ||
-          (Period() == PERIOD_H4 && t2.day_of_week == 1 && t2.hour == 0 && t2.min == 0 && lastTime != time[i]) ||
-          (Period() <= PERIOD_H3 && t2.hour == SeparatorHour && t2.min == SeparatorMinute && lastTime != time[i])) 
+      datetime t = time[i];
+
+      // offset dinámico NY vs server
+      int ny_offset = GetNewYorkOffset(t);
+      int diff      = ny_offset - ServerGMT;
+
+      // construyo medianoche NY (convertida a tiempo server)
+      MqlDateTime st; TimeToStruct(t, st);
+      st.hour=0; st.min=0; st.sec=0;
+      datetime ny_midnight = StructToTime(st) - diff*3600;
+
+      bool draw=false;
+
+      if(tf==PERIOD_MN1 && IsNewYear(ny_midnight)) draw=true;
+      if((tf==PERIOD_W1 || tf==PERIOD_D1) && IsNewMonth(ny_midnight)) draw=true;
+      if(tf==PERIOD_H4 && IsNewWeek(ny_midnight)) draw=true;
+      if(tf<=PERIOD_H3 && IsNewDay(ny_midnight)) draw=true;
+
+      if(draw)
       {
-         // Create a new vertical line
-         string name = "vline_" + TimeToString(time[i], TIME_DATE|TIME_MINUTES);
-         ObjectCreate(0, name, OBJ_VLINE, 0, time[i], 0);
-         ObjectSetInteger(0, name, OBJPROP_COLOR, LineColor);
-         ObjectSetInteger(0, name, OBJPROP_STYLE, LineStyle);
-         ObjectSetInteger(0, name, OBJPROP_WIDTH, LineWidth);
-         ObjectSetInteger(0, name, OBJPROP_BACK, true);
-         lastTime = time[i];
-         if (Period() == PERIOD_D1) lastMonth = t2.mon;
+         string name = "Sep_"+(string)ny_midnight;
+         if(!ObjectCreate(0,name,OBJ_VLINE,0,ny_midnight,0))
+            continue;
+
+         ObjectSetInteger(0,name,OBJPROP_COLOR,SepColor);
+         ObjectSetInteger(0,name,OBJPROP_STYLE,SepStyle);
+         ObjectSetInteger(0,name,OBJPROP_WIDTH,SepWidth);
       }
    }
    return(rates_total);
