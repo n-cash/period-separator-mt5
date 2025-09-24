@@ -1,167 +1,202 @@
 //+------------------------------------------------------------------+
-//|                Separador de Períodos Universal (base)            |
-//|                Manejo flexible de DST (US/EU/None)               |
+//|                          dinamic-period-separator.mq5           |
+//|   Separador dinámico con visibilidad por timeframe               |
 //+------------------------------------------------------------------+
 #property indicator_chart_window
-#property indicator_buffers 0
-#property strict
+#property copyright "Open Source"
+#property link      ""
 
-//------------------ INPUTS ------------------//
-input int      ServerGMTOffset    = 3;    // Offset del servidor (ej: GMT+3)
-input bool     UseDST_USA         = true; // Aplicar DST USA (New York)
-input bool     UseDST_Europe      = false;// Aplicar DST Europa
-input color    LineColor          = clrGray;
-input ENUM_LINE_STYLE LineStyle   = STYLE_DOT;
-input int      LineWidth          = 1;
+// Asegurate de tener la librería daylight.mqh en MQL5/Include/
+// https://www.mql5.com/en/code/27860
+#include <daylight.mqh>
 
-//------------------ FUNCIONES DST ------------------//
-datetime GetNthSunday(int year, int month, int n)
+//--- Inputs configurables
+input int   ServerGMT        = 2;    // GMT del broker en horario de invierno
+input bool  BrokerAdjustsDST = true; // ¿El broker ya corrige DST automáticamente?
+input color SepColor         = clrBlack; // Color de las líneas
+input int   SepStyle         = STYLE_DOT; // Estilo
+input int   SepWidth         = 1;        // Grosor
+
+//--- Máscaras de visibilidad por timeframe
+#define TF_ALL     (OBJ_ALL_PERIODS)
+#define TF_DWM     (OBJ_PERIOD_M1|OBJ_PERIOD_M2|OBJ_PERIOD_M3|OBJ_PERIOD_M4|OBJ_PERIOD_M5|OBJ_PERIOD_M6|OBJ_PERIOD_M10|OBJ_PERIOD_M12|OBJ_PERIOD_M15|OBJ_PERIOD_M20|OBJ_PERIOD_M30|OBJ_PERIOD_H1|OBJ_PERIOD_H2) // diarios + todo
+#define TF_WMY     (OBJ_PERIOD_H3|OBJ_PERIOD_H4|OBJ_PERIOD_H6|OBJ_PERIOD_H8|OBJ_PERIOD_H12) // semanales + mayores
+#define TF_MY      (OBJ_PERIOD_D1) // mensuales + anual
+#define TF_Y       (OBJ_PERIOD_W1|OBJ_PERIOD_MN1) // solo anual
+
+//--- Helpers DST NY
+bool InDST(datetime t)
 {
-   int count = 0;
-   for(int d=1; d<=31; d++)
-   {
-      datetime t = StringToTime(IntegerToString(year)+"."+IntegerToString(month)+"."+IntegerToString(d)+" 00:00");
-      if(TimeMonth(t)!=month) break;
-      if(TimeDayOfWeek(t)==0) // domingo
-      {
-         count++;
-         if(count==n) return t;
-      }
-   }
-   return 0;
+   datetime dst_start, dst_end;
+
+   MqlDateTime st;
+   TimeToStruct(t, st);
+   int year = st.year;
+
+   DST_NewYork(year, dst_start, dst_end);
+   return (t >= dst_start && t < dst_end);
 }
 
-// DST USA: 2° domingo marzo (start) / 1° domingo noviembre (end)
-void GetDST_USA(int year, datetime &start, datetime &end)
+int GetNewYorkOffset(datetime t)
 {
-   start = GetNthSunday(year,3,2)  + 2*3600;
-   end   = GetNthSunday(year,11,1) + 2*3600;
+   return InDST(t) ? -4 : -5; // NY DST=-4, Standard=-5
 }
 
-// DST Europa: último domingo marzo (start) / último domingo octubre (end)
-void GetDST_Europe(int year, datetime &start, datetime &end)
+//--- Calcular offset efectivo entre servidor y NY
+int GetEffectiveDiff(datetime t)
 {
-   datetime lastMarch=0, lastOct=0;
-   for(int d=31; d>=1; d--)
+   int ny_offset = GetNewYorkOffset(t); // -5 o -4
+
+   if(BrokerAdjustsDST)
    {
-      datetime t = StringToTime(IntegerToString(year)+".3."+IntegerToString(d)+" 01:00");
-      if(TimeMonth(t)==3 && TimeDayOfWeek(t)==0){ lastMarch=t; break; }
+      // Broker ya sigue DST → diferencia fija
+      return ny_offset - ServerGMT;
    }
-   for(int d=31; d>=1; d--)
+   else
    {
-      datetime t = StringToTime(IntegerToString(year)+".10."+IntegerToString(d)+" 01:00");
-      if(TimeMonth(t)==10 && TimeDayOfWeek(t)==0){ lastOct=t; break; }
+      // Broker fijo en GMT → calcular offset DST manual para server
+      // Simplificado: server_offset = ServerGMT (invierno)
+      //               +1 si estamos en verano europeo
+      MqlDateTime st;
+      TimeToStruct(t, st);
+
+      // último domingo de marzo → empieza DST EU
+      datetime eu_start = GetNthSunday(st.year, 3, 5) + 1*3600;
+      // último domingo de octubre → termina DST EU
+      datetime eu_end   = GetNthSunday(st.year, 10, 5) + 2*3600;
+
+      int server_offset = ServerGMT;
+      if(t >= eu_start && t < eu_end)
+         server_offset = ServerGMT + 1;
+
+      return ny_offset - server_offset;
    }
-   start = lastMarch + 1*3600;
-   end   = lastOct   + 1*3600;
 }
 
-// Cálculo offset dinámico
-int GetTotalOffset(datetime t)
+//--- Determinar tipo de separador
+string GetSeparatorType(datetime t)
 {
-   int offset = ServerGMTOffset * 3600;
+   MqlDateTime st;
+   TimeToStruct(t, st);
 
-   int year = TimeYear(t);
-
-   if(UseDST_USA)
-   {
-      datetime usStart, usEnd;
-      GetDST_USA(year,usStart,usEnd);
-      if(t>=usStart && t<usEnd) offset += 3600;
-   }
-
-   if(UseDST_Europe)
-   {
-      datetime euStart, euEnd;
-      GetDST_Europe(year,euStart,euEnd);
-      if(t>=euStart && t<euEnd) offset += 3600;
-   }
-
-   return offset;
+   if(st.mon == 1 && st.day == 1 && st.hour == 0)
+      return "Y"; // Año
+   else if(st.day == 1 && st.hour == 0)
+      return "M"; // Mes
+   else if(st.day_of_week == 1 && st.hour == 0)
+      return "W"; // Semana
+   else if(st.hour == 0)
+      return "D"; // Día
+   return "";
 }
 
-//------------------ DIBUJO ------------------//
+//--- Limpiar separadores anteriores al cambiar timeframe
+void ClearSeparators()
+{
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, "SepNY_") == 0)
+         ObjectDelete(0, name);
+   }
+}
+
+//--- Indicador principal
 int OnInit()
 {
-   EventSetTimer(60); // refrescar cada minuto
+   IndicatorSetInteger(INDICATOR_DIGITS, 0);
+   ClearSeparators();
    return(INIT_SUCCEEDED);
 }
 
-void OnDeinit(const int reason)
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
 {
-   EventKillTimer();
-   ObjectsDeleteAll(0,"SepLine_");
-}
+   // limpiar y redibujar desde cero cada vez
+   ClearSeparators();
 
-void OnTimer()
-{
-   RedrawLines();
-}
-
-void OnCalculate(const int rates_total,
-                 const int prev_calculated,
-                 const datetime &time[],
-                 const double &open[],
-                 const double &high[],
-                 const double &low[],
-                 const double &close[],
-                 const long &tick_volume[],
-                 const long &volume[],
-                 const int &spread[])
-{
-   RedrawLines();
-}
-
-void RedrawLines()
-{
-   ObjectsDeleteAll(0,"SepLine_");
-
-   MqlDateTime dt;
-   datetime start = iTime(NULL,PERIOD_D1,0) - PeriodSeconds(PERIOD_D1)*100;
-   datetime end   = TimeCurrent() + PeriodSeconds(_Period);
-
-   for(datetime t=start; t<=end; t+=PeriodSeconds(PERIOD_D1))
+   for(int i = 0; i < rates_total; i++)
    {
-      int totalOffset = GetTotalOffset(t);
-      datetime estTime = t - totalOffset; // convertir a EST
+      datetime t = time[i];
+      string tipo = GetSeparatorType(t);
+      if(tipo == "") continue;
 
-      TimeToStruct(estTime,dt);
+      // decidir si corresponde según timeframe actual
+      ENUM_TIMEFRAMES tf = (ENUM_TIMEFRAMES)Period();
 
-      bool draw=false;
-      string label="";
+      bool dibujar = false;
+      int mask = 0;
 
-      switch(_Period)
+      if(tf <= PERIOD_H2) // M1..H2 → todo
       {
-         case PERIOD_M1:
-         case PERIOD_M5:
-         case PERIOD_M15:
-         case PERIOD_M30:
-         case PERIOD_H1:
-         case PERIOD_H3:
-            draw=true;
-            label=StringFormat("%02d:%02d",dt.hour,dt.min);
-            break;
-         case PERIOD_H4:
-         case PERIOD_D1:
-            if(dt.hour==0) { draw=true; label=TimeToString(estTime,TIME_DATE); }
-            break;
-         case PERIOD_W1:
-            if(dt.mon==1 && dt.mday==1){ draw=true; label="Year "+IntegerToString(dt.year); }
-            break;
-         case PERIOD_MN1:
-            if(dt.mday==1){ draw=true; label=TimeToString(estTime,TIME_DATE); }
-            break;
+         dibujar = true;
+         if(tipo=="D") mask=TF_DWM;
+         else if(tipo=="W") mask=TF_DWM;
+         else if(tipo=="M") mask=TF_DWM;
+         else if(tipo=="Y") mask=TF_DWM;
+      }
+      else if(tf >= PERIOD_H3 && tf <= PERIOD_H12) // H3..H12
+      {
+         if(tipo=="W" || tipo=="M" || tipo=="Y")
+         {
+            dibujar = true;
+            mask=TF_WMY;
+         }
+      }
+      else if(tf == PERIOD_D1) // Diario
+      {
+         if(tipo=="M" || tipo=="Y")
+         {
+            dibujar = true;
+            mask=TF_MY;
+         }
+      }
+      else if(tf == PERIOD_W1 || tf == PERIOD_MN1) // Semanal / Mensual
+      {
+         if(tipo=="Y")
+         {
+            dibujar = true;
+            mask=TF_Y;
+         }
       }
 
-      if(draw)
+      if(!dibujar) continue;
+
+      // aplicar offset si corresponde (solo en tf <= H12)
+      datetime draw_time = t;
+      if(tf <= PERIOD_H12)
       {
-         string name="SepLine_"+(string)t;
-         if(!ObjectCreate(0,name,OBJ_VLINE,0,t,0))
-            continue;
-         ObjectSetInteger(0,name,OBJPROP_COLOR,LineColor);
-         ObjectSetInteger(0,name,OBJPROP_STYLE,LineStyle);
-         ObjectSetInteger(0,name,OBJPROP_WIDTH,LineWidth);
-         ObjectSetString(0,name,OBJPROP_TEXT,label);
+         int diff = GetEffectiveDiff(t);
+         datetime ny_local = t + (datetime)diff*3600;
+
+         MqlDateTime ny_st;
+         TimeToStruct(ny_local, ny_st);
+         ny_st.hour=0; ny_st.min=0; ny_st.sec=0;
+         datetime ny_midnight_local = StructToTime(ny_st);
+
+         draw_time = ny_midnight_local - (datetime)diff*3600;
+      }
+
+      // crear línea
+      string name = "SepNY_" + tipo + "_" + IntegerToString((int)draw_time);
+      if(ObjectFind(0, name) == -1)
+      {
+         ObjectCreate(0, name, OBJ_VLINE, 0, draw_time, 0);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, SepColor);
+         ObjectSetInteger(0, name, OBJPROP_STYLE, SepStyle);
+         ObjectSetInteger(0, name, OBJPROP_WIDTH, SepWidth);
+         ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, mask);
       }
    }
+
+   return(rates_total);
 }
