@@ -20,8 +20,8 @@ input int   SepWidth    = 1;                // Grosor
 //--- Máscaras de visibilidad (tabla OBJPROP_TIMEFRAMES)
 #define TF_DAILY   (OBJ_PERIOD_M1|OBJ_PERIOD_M2|OBJ_PERIOD_M3|OBJ_PERIOD_M4|OBJ_PERIOD_M5|OBJ_PERIOD_M6|OBJ_PERIOD_M10|OBJ_PERIOD_M12|OBJ_PERIOD_M15|OBJ_PERIOD_M20|OBJ_PERIOD_M30|OBJ_PERIOD_H1|OBJ_PERIOD_H2)
 #define TF_H3PLUS  (OBJ_PERIOD_H3|OBJ_PERIOD_H4|OBJ_PERIOD_H6|OBJ_PERIOD_H8|OBJ_PERIOD_H12)
-#define TF_MONTHLY (OBJ_PERIOD_D1|OBJ_PERIOD_W1)
-#define TF_YEARLY  (OBJ_PERIOD_MN1)
+#define TF_MONTHLY (OBJ_PERIOD_D1)
+#define TF_YEARLY  (OBJ_PERIOD_W1|OBJ_PERIOD_MN1)
 
 //--- Prefijo objetos
 string OBJ_PREFIX = "SepNY_";
@@ -350,3 +350,4 @@ int OnCalculate(const int rates_total,const int prev_calculated,const datetime &
 
    return(rates_total);
 }
+
